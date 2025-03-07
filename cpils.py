@@ -21,7 +21,7 @@ from sklearn.cluster import KMeans
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 flatten = lambda m: [item for row in m for item in row]
-        
+
 class LinearEnc(nn.Module):
     def __init__(self, input_dim, latent_dim):
         super(LinearEnc, self).__init__()
@@ -29,7 +29,7 @@ class LinearEnc(nn.Module):
         self.input_dim = input_dim
         self.latent_dim = latent_dim
 
-        self.weight = nn.Parameter(nn.init.uniform_(torch.Tensor(latent_dim, input_dim), 
+        self.weight = nn.Parameter(nn.init.uniform_(torch.Tensor(latent_dim, input_dim),
                                                     a=-1./np.sqrt(input_dim),b=1./np.sqrt(input_dim)))
 
     def encode(self, x):
@@ -37,7 +37,7 @@ class LinearEnc(nn.Module):
         return self.weight, z
     def forward(self, x):
         w, z = self.encode(x)
-        return w, z    
+        return w, z
 
 def compute_similarity_Z(Z, sigma=1):
     D = 1 - F.cosine_similarity(Z[:, None, :], Z[None, :, :], dim=-1)
@@ -59,7 +59,7 @@ def compute_similarity_X(X, idx_cat=None, sigma=1):
             D_cont = 1 - F.cosine_similarity(X_cont[:, None, :], X_cont[None, :, :], dim=-1)
             D += ((m-h)/m) * D_cont
     else:
-        D_features = 1 - F.cosine_similarity(X[:, None, :], X[None, :, :], dim=-1) 
+        D_features = 1 - F.cosine_similarity(X[:, None, :], X[None, :, :], dim=-1)
         D = D_features + D_class
     M = torch.exp((-D**2)/(2*sigma**2))
     return M / (torch.ones([M.shape[0],M.shape[1]]).to(device)*(torch.sum(M, axis = 0))).transpose(0,1)
@@ -72,8 +72,8 @@ def kld_loss_function(X, Z, idx_cat=None, sigma=1):
     return loss
 
 class CP_ILS(torch.nn.Module):
-    def __init__(self, bb_predict, bb_predict_proba, latent_dim=2, max_epochs=1000, early_stopping=5, 
-                learning_rate=0.001, batch_size=1024, sigma=1):
+    def __init__(self, bb_predict, bb_predict_proba, latent_dim=2, max_epochs=1000, early_stopping=5,
+                learning_rate=0.001, batch_size=1024, sigma=1,verbose=True):
         super().__init__()
 
         self.bb_predict = bb_predict
@@ -88,12 +88,14 @@ class CP_ILS(torch.nn.Module):
         self.batch_size=batch_size
         self.sigma=sigma
 
+        self.verbose=verbose
+
     def _predict(self, x, scaler=None, return_proba=False):
         if scaler:
             x = scaler.inverse_transform(x)
         if return_proba:
             return self.bb_predict_proba(x)[:,1].ravel()
-        else: 
+        else:
             return self.bb_predict(x).ravel().ravel()
 
     def _set(self, X, idx_num_cat, init_path=None):
@@ -109,7 +111,7 @@ class CP_ILS(torch.nn.Module):
         self.X_train_bb, self.X_test_bb = X
         self.y_train_bb = self._predict(self.X_train_bb, return_proba=True)
         self.y_test_bb = self._predict(self.X_test_bb, return_proba=True)
-        
+
         #idx_num_cat += [[X_train_bb.shape[1]]]
 
         # if self.idx_num:
@@ -149,7 +151,6 @@ class CP_ILS(torch.nn.Module):
     def fit(self, X, idx_num_cat, init_path=None, seed=None):
 
         self._set(X, idx_num_cat, init_path)
-
         if seed:
             np.random.seed(seed)
             torch.manual_seed(seed)
@@ -163,10 +164,10 @@ class CP_ILS(torch.nn.Module):
     def _train(self):
 
         train_dataset = TensorDataset(torch.tensor(self.X_train).float().to(device))
-        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True) 
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
 
         test_dataset = TensorDataset(torch.tensor(self.X_test).float().to(device))
-        test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False) 
+        test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False)
 
         model_params = list(self.model.parameters())
         optimizer = torch.optim.Adam(model_params, lr=self.learning_rate)
@@ -176,9 +177,10 @@ class CP_ILS(torch.nn.Module):
         epoch = 1
         best = np.inf
 
-        # progress bar
-        pbar = tqdm(bar_format="{postfix[0]} {postfix[1][value]:03d} {postfix[2]} {postfix[3][value]:.5f} {postfix[4]} {postfix[5][value]:.5f} {postfix[6]} {postfix[7][value]:d}",
-            postfix=["Epoch:", {'value':0}, "Train Loss", {'value':0}, "Test Loss", {'value':0}, "Early Stopping", {"value":0}])
+        if self.verbose:
+            # progress bar
+            pbar = tqdm(bar_format="{postfix[0]} {postfix[1][value]:03d} {postfix[2]} {postfix[3][value]:.5f} {postfix[4]} {postfix[5][value]:.5f} {postfix[6]} {postfix[7][value]:d}",
+                postfix=["Epoch:", {'value':0}, "Train Loss", {'value':0}, "Test Loss", {'value':0}, "Early Stopping", {"value":0}])
 
         with tempfile.TemporaryDirectory(dir = './') as dname:
             # start training
@@ -192,14 +194,15 @@ class CP_ILS(torch.nn.Module):
 
                     W_batch, Z_batch = self.model.encode(X_batch)
                     loss = kld_loss_function(X_batch, Z_batch, self.idx_cat, self.sigma)
-                    
+
                     loss.backward()
                     optimizer.step()
-                    
+
                     batch_loss.append(loss.item())
                 # save result
                 epoch_train_losses.append(np.mean(batch_loss))
-                pbar.postfix[3]["value"] = np.mean(batch_loss)
+                if self.verbose:
+                    pbar.postfix[3]["value"] = np.mean(batch_loss)
                 # -------- VALIDATION --------
                 # set model as testing mode
                 self.model.eval()
@@ -212,8 +215,8 @@ class CP_ILS(torch.nn.Module):
                         batch_loss.append(loss.item())
                 # save result
                 epoch_test_losses.append(np.mean(batch_loss))
-                pbar.postfix[5]["value"] = np.mean(batch_loss)
-                pbar.postfix[1]["value"] = epoch 
+                if self.verbose:
+                    pbar.postfix[5]["value"] = np.mean(batch_loss)
                 if epoch_test_losses[-1] < best:
                     wait = 0
                     best = epoch_test_losses[-1]
@@ -221,11 +224,13 @@ class CP_ILS(torch.nn.Module):
                     torch.save(self.model.state_dict(), dname+'/LinearTransparentTemp.pt')
                 else:
                     wait += 1
-                pbar.postfix[7]["value"] = wait
+                if self.verbose:
+                    pbar.postfix[7]["value"] = wait
+                    pbar.postfix[1]["value"] = epoch
+                    pbar.update()
                 if wait == self.early_stopping:
-                    break    
+                    break
                 epoch += 1
-                pbar.update()
             self.model.load_state_dict(torch.load(dname+'/LinearTransparentTemp.pt'))
 
         return epoch_train_losses, epoch_test_losses
@@ -237,7 +242,7 @@ class CP_ILS(torch.nn.Module):
         self.model.eval()
         with torch.no_grad():
             W, Z = self.model.encode(torch.tensor(X).float())
-        return W.cpu().detach().numpy(), Z.cpu().detach().numpy() 
+        return W.cpu().detach().numpy(), Z.cpu().detach().numpy()
 
     def _compute_cf(self, q, indexes, max_steps=50):
         q_pred = self._predict(q.values, self.scaler, return_proba=True)
@@ -277,11 +282,11 @@ class CP_ILS(torch.nn.Module):
                 #preserve minmax(0,1)
                 if self.idx_num:
                     q_cf.iloc[:, self.idx_num] = np.clip(q_cf.iloc[:, self.idx_num], 0, 1)
-                
+
                 # check changes or null effects in the prediction
                 if float(self._predict(q_cf.iloc[:,:-1].values, self.scaler, return_proba=True)) in q_cf_preds:
                     return q_cf.iloc[:,:-1]
-                
+
                 q_cf_preds.append(float(self._predict(q_cf.iloc[:,:-1].values, self.scaler, return_proba=True)))
                 q_cf[q_cf.columns[-1]] = q_cf_preds[-1]
             else:
@@ -302,7 +307,7 @@ class CP_ILS(torch.nn.Module):
                 dist_continuous = cdist(XA[:, self.idx_num], XB[:, self.idx_num],
                                     metric=metric_continuous, w=w)
                 ratio_continuous = len(self.idx_num) / (self.input_dim-1)
-                dist += ratio_continuous * dist_continuous 
+                dist += ratio_continuous * dist_continuous
         else:
             dist = cdist(XA, XB, metric=metric_continuous, w=w)
 
@@ -402,20 +407,23 @@ class CP_ILS(torch.nn.Module):
         return cf_list
 
 
-    def get_counterfactuals(self, df_test, features_to_change, max_features_to_change, 
+    def get_counterfactuals(self, df_test, features_to_change, max_features_to_change,
                                 max_steps=50, n_cfs=-1, n_feats_sampled=5, topn_to_check=5, seed=42):
 
         rng = np.random.default_rng(seed)
 
         self.model.eval()
-        
+
+        # those are the counterfactuals in the original space
         all_cfs = []
-        
+        # those are the counterfactuals in the latent space
+        all_q_cfs = []
+
         for _, row in tqdm(list(df_test.iterrows())):
-            
+
             q_cfs = []
 
-            q = row.to_frame().T  
+            q = row.to_frame().T
             q.iloc[:, :] = self.scaler.transform(q.values)
 
             q_pred = self._predict(q.values, self.scaler, return_proba=False)
@@ -423,10 +431,8 @@ class CP_ILS(torch.nn.Module):
             s_f = set()
             l_i = []
             l_f = []
-            
-            ########
 
-            for indexes in list(combinations(list(features_to_change),1)):    
+            for indexes in list(combinations(list(features_to_change),1)):
                 q_cf = self._compute_cf(q, list(indexes), max_steps)
                 q_cf_pred = self._predict(q_cf.values, self.scaler, return_proba=True)
                 diff_probs = float(abs(q_cf_pred-0.5))
@@ -442,18 +448,18 @@ class CP_ILS(torch.nn.Module):
                         s_i[-1].add(frozenset(list(indexes)))
                     else:
                         l_i.append((list(indexes), diff_probs))
-                        
+
             if len(l_i)>0:
-                
+
                 r = np.argsort(np.stack(np.array(l_i,dtype=object)[:,1]).ravel())[:topn_to_check]
                 l_i = np.array(l_i,dtype=object)[r,0]
-            
+
                 while len(l_i[0])<max_features_to_change:
                     for e in l_i:
-                        features_to_check = list(np.delete(features_to_change, 
+                        features_to_check = list(np.delete(features_to_change,
                                  list(map(lambda f: (features_to_change).index(f), e))))
 
-                        for i in rng.choice(features_to_check, 
+                        for i in rng.choice(features_to_check,
                                                   size=min(len(features_to_check), n_feats_sampled), replace=False):
 
                             indexes = list(e)+[i]
@@ -465,7 +471,7 @@ class CP_ILS(torch.nn.Module):
 
                             if not skip_i:
                                 #check if any subset of current indices already returned a cf
-                                for comb_i in chain.from_iterable(combinations(indexes, r) 
+                                for comb_i in chain.from_iterable(combinations(indexes, r)
                                                                   for r in range(1, len(indexes))):
                                     if frozenset(comb_i) in s_i[len(comb_i)-1]:
                                         skip_i = True
@@ -487,10 +493,10 @@ class CP_ILS(torch.nn.Module):
                                         s_f.add(frozenset(indexes))
                                     else:
                                         l_f.append((list(indexes), diff_probs))
-                    
+
                     if len(l_f)==0:
                         break
-                        
+
                     s_i.append(s_f.copy())
                     s_f = set()
 
@@ -498,21 +504,28 @@ class CP_ILS(torch.nn.Module):
                     l_f = np.array(l_f,dtype=object)[r,0]
                     l_i = l_f.copy()
                     l_f = []
-                
+
             if len(q_cfs)==0:
+                
                 all_cfs.append(pd.DataFrame(None, columns=q.columns))
+                all_q_cfs.append(pd.DataFrame(None, columns=q.columns))
             else:
+                
                 #q_cfs = [pd.Series(self.scaler.inverse_transform(cf)[0], index=q.columns, name=q.index[0]).to_frame().T for cf in q_cfs]
                 q_cfs = pd.concat(q_cfs).drop_duplicates()
+                print("Found ", len(q_cfs), " counterfactuals")
                 if n_cfs > -1:
                     if len(q_cfs)>n_cfs:
                         cf_list = self._greedy_kcover(q.values, q_cfs.values.squeeze(), k=n_cfs).squeeze()
                         q_cfs = [pd.Series(cf, index=q.columns, name=q.index[0]).to_frame().T for cf in cf_list[:n_cfs]]
                         q_cfs = pd.concat(q_cfs)
+                        print(f"Number of CFs after k-cover selection: {len(q_cfs)}")
                 q_cfs.iloc[:,:] = self.scaler.inverse_transform(q_cfs.iloc[:,:])
                 all_cfs.append(q_cfs)
-        
-        return pd.concat(all_cfs)
+                _, Z = self.transform(q_cfs.values)
+                all_q_cfs.append(pd.DataFrame(Z, columns=[f"z_{i}" for i in range(Z.shape[1])]))
+
+        return pd.concat(all_cfs), pd.concat(all_q_cfs)
 
     def get_prototypes(self, df_test, n_proto=20, seed=42):
 
@@ -547,17 +560,12 @@ class CP_ILS(torch.nn.Module):
 
         idx_proto = np.arange(proto_latent.shape[0])
         x_pred = self._predict(df_test.values, return_proba=False)
-        
-        knn_1 = [np.argmin(self._cdist(proto_latent.values[proto_pred==x_pred[i]], 
+
+        knn_1 = [np.argmin(self._cdist(proto_latent.values[proto_pred==x_pred[i]],
                                        self.scaler.transform(df_test.values[i].reshape(1,-1))), axis=0)
-                    for i in range(df_test.shape[0])] # 
-        knn_1 = np.array([idx_proto[proto_pred==x_pred[i]][kn] for i, kn in enumerate(knn_1)]).ravel() # 
+                    for i in range(df_test.shape[0])] #
+        knn_1 = np.array([idx_proto[proto_pred==x_pred[i]][kn] for i, kn in enumerate(knn_1)]).ravel() #
 
         proto_latent.iloc[:,:] = self.scaler.inverse_transform(proto_latent.iloc[:,:])
-        
+
         return proto_latent, proto_latent.iloc[knn_1].set_index(df_test.index)
-        
-        
-
-
-
